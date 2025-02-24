@@ -1,135 +1,174 @@
 import streamlit as st
 import jsonlines
-import pandas as pd
-import gymnasium as gym
 import numpy as np
+import matplotlib.pyplot as plt
 from stable_baselines3 import PPO
-from fn_rl_env import FNThresholdEnv  # Import our RL environment
-# ✅ Step 1: Define Initial Thresholds (Only Changing These)
+from fn_rl_env import FNThresholdEnv  
+
+# ✅ Initial Thresholds
 thresholds = {
-   "Bloed": 80,
-   "Eigeel": 120,
-   "Mest": 130,
-   "Kneus": 20,
-   "Openbreuk": 20,
-   "Scheur": 175,
+    "Bloed": 80.0,
+    "Eigeel": 120.0,
+    "Mest": 130.0,
+    "Kneus": 20.0,
+    "Openbreuk": 20.0,
+    "Scheur": 175.0,
 }
-# ✅ Function to Extract Negatives and FNs
-def extract_negatives_and_fns(file_path, thresholds, percentage=1.0):
-   negatives = []
-   fns = []
-   with jsonlines.open(file_path, "r") as reader:
-       for egg_list in reader:  # ✅ Each line in JSONL is a LIST of dictionaries
-           is_negative = False
-           is_fn = False
-           max_deviation = 0
-           # ✅ Iterate over each dictionary inside the list
-           for egg in egg_list:  
-               if not isinstance(egg, dict):  # ✅ Ensure it's a dictionary
-                   continue  
-               label = egg.get("Label")  
-               value = egg.get("Value", 0)
-               if label in thresholds:
-                   threshold = thresholds[label]
-                   deviation = ((value - threshold) / threshold) * 100
-                   if deviation > 0:  
-                       is_negative = True
-                       if deviation <= percentage:
-                           is_fn = True
-                       max_deviation = max(max_deviation, deviation)
-           if is_negative:
-               negatives.append(egg_list)
-           if is_fn:
-               fns.append(egg_list)
-   return negatives, fns
-# ✅ Streamlit UI
-st.title("FN Threshold Optimization for 4-Day Egg Batch")
-st.write("Upload JSONL files for **Day 1, Day 2, Day 3, and Day 4** to optimize False Negative (FN) thresholds.")
-# ✅ Upload Files for 4 Days
-uploaded_files = st.file_uploader("Upload 4 JSONL Files (One for Each Day)", type="jsonl", accept_multiple_files=True)
-if uploaded_files and len(uploaded_files) == 4:
-   try:
-       # ✅ Save Files
-       file_paths = []
-       for i, uploaded_file in enumerate(uploaded_files):
-           file_path = f"day_{i+1}.jsonl"
-           with open(file_path, "wb") as f:
-               f.write(uploaded_file.getbuffer())
-           file_paths.append(file_path)
-       # ✅ Process Day 1
-       st.subheader("Processing Day 1...")
-       negatives_day1, fns_day1 = extract_negatives_and_fns(file_paths[0], thresholds, percentage=1.0)
-       st.write(f"Day 1 - **Total Negatives**: {len(negatives_day1)}, **1% FN Count**: {len(fns_day1)}")
-       # ✅ Increment Thresholds Linearly (e.g., Blood 80 → 81)
-       new_thresholds = {key: value + 1 for key, value in thresholds.items()}
-       st.write("New Thresholds for Day 2:", new_thresholds)
-       # ✅ Process Day 2
-       st.subheader("Processing Day 2...")
-       negatives_day2, fns_day2 = extract_negatives_and_fns(file_paths[1], new_thresholds, percentage=1.0)
-       st.write(f"Day 2 - **Total Negatives**: {len(negatives_day2)}, **1% FN Count**: {len(fns_day2)}")
-       # ✅ Train RL Agent Based on FN Changes from Day 2 → Day 3
-       st.subheader("Training RL Model (Day 3)...")
-       best_thresholds = None
-       best_fn_count = float('inf')
-       for _ in range(10):  
-           fn_file = "fn_training_data.jsonl"
-           with jsonlines.open(fn_file, "w") as writer:
-               for egg_list in fns_day2:
-                   for egg in egg_list:
-                       writer.write(egg)
-           # ✅ Create RL Environment and Train
-           env = FNThresholdEnv(fn_file, new_thresholds)
-           model = PPO("MlpPolicy", env, verbose=1)
-           model.learn(total_timesteps=5000)
-           # ✅ Get RL-Optimized Thresholds
-           obs, _ = env.reset()
-           for _ in range(10):  
-               action, _ = model.predict(obs)
-               obs, reward, terminated, truncated, info = env.step(action)
-               if terminated or truncated:
-                   obs, _ = env.reset()
-           candidate_thresholds = {key: float(obs[i]) for i, key in enumerate(new_thresholds.keys())}
-           # ✅ Apply these thresholds on Day 3 and check FN count
-           negatives_day3, fns_day3 = extract_negatives_and_fns(file_paths[2], candidate_thresholds, percentage=1.0)
-           if len(fns_day3) < best_fn_count:
-               best_fn_count = len(fns_day3)
-               best_thresholds = candidate_thresholds
-       for key in best_thresholds.keys():
-           best_thresholds[key] = round(min(best_thresholds[key], new_thresholds[key] + 2), 2)
-       st.write("RL-Optimized Thresholds for Day 3 (Best Among 10 Runs):", best_thresholds)
-       # ✅ Process Day 3 (Apply RL-Optimized Thresholds)
-       st.subheader("Processing Day 3...")
-       negatives_day3, fns_day3 = extract_negatives_and_fns(file_paths[2], best_thresholds, percentage=1.0)
-       st.write(f"Day 3 - **Total Negatives**: {len(negatives_day3)}, **1% FN Count**: {len(fns_day3)}")
-       # ✅ Train RL Again for Day 4
-       st.subheader("Training RL Model (Day 4)...")
-       best_thresholds_day4 = None
-       best_fn_count_day4 = float('inf')
-       for _ in range(10):  
-           fn_file = "fn_training_data_day4.jsonl"
-           with jsonlines.open(fn_file, "w") as writer:
-               for egg_list in fns_day3:
-                   for egg in egg_list:
-                       writer.write(egg)
-           env = FNThresholdEnv(fn_file, best_thresholds)
-           model = PPO("MlpPolicy", env, verbose=1)
-           model.learn(total_timesteps=5000)
-           obs, _ = env.reset()
-           for _ in range(10):  
-               action, _ = model.predict(obs)
-               obs, reward, terminated, truncated, info = env.step(action)
-               if terminated or truncated:
-                   obs, _ = env.reset()
-           candidate_thresholds_day4 = {key: float(obs[i]) for i, key in enumerate(best_thresholds.keys())}
-           negatives_day4, fns_day4 = extract_negatives_and_fns(file_paths[3], candidate_thresholds_day4, percentage=1.0)
-           if len(fns_day4) < best_fn_count_day4:
-               best_fn_count_day4 = len(fns_day4)
-               best_thresholds_day4 = candidate_thresholds_day4
-       for key in best_thresholds_day4.keys():
-           best_thresholds_day4[key] = round(min(best_thresholds_day4[key], best_thresholds[key] + 2), 2)
-       st.write("RL-Optimized Thresholds for Day 4 (Best Among 10 Runs):", best_thresholds_day4)
-       st.subheader("Processing Day 4...")
-       negatives_day4, fns_day4 = extract_negatives_and_fns(file_paths[3], best_thresholds_day4, percentage=1.0)
-       st.write(f"Day 4 - **Total Negatives**: {len(negatives_day4)}, **1% FN Count**: {len(fns_day4)}")
-   except Exception as e:
-       st.error(f"Error: {e}")
+
+# ✅ Define Max Thresholds (+20% Ceiling)
+max_thresholds = {key: round(value * 1.2, 2) for key, value in thresholds.items()}
+
+# ✅ Store Threshold History for Visualization
+threshold_history = {key: [value] for key, value in thresholds.items()}
+
+# ✅ Function to Extract FNs
+def extract_fns(file_path, thresholds, percentage=1.0):
+    fns = []
+    with jsonlines.open(file_path, "r") as reader:
+        for egg_list in reader:
+            for egg in egg_list:
+                label = egg.get("Label")
+                value = egg.get("Value", 0)
+                if label in thresholds:
+                    threshold = thresholds[label]
+                    deviation = ((value - threshold) / threshold) * 100
+                    if 0 < deviation <= percentage:
+                        fns.append(egg_list)
+                        break  
+    return fns
+
+# ✅ --- Streamlit UI Setup ---
+st.set_page_config(
+    page_title="Egg Sorting Optimization - Vencomatic",
+    page_icon="🥚",
+    layout="wide"
+)
+
+# ✅ Sidebar with branding
+st.sidebar.image("venco.png", use_container_width=True)
+st.sidebar.title("Egg Sorting Optimization")
+st.sidebar.info("Upload daily batch data to optimize egg sorting thresholds.")
+
+# ✅ Main Section Title
+st.title("🐔 Meggsius Select Automatic Calibration")
+st.markdown("""
+**Welcome to the Vencomatic Group Meggsius Select System.**  
+This system learns from False Negatives (FNs) to adjust sorting thresholds per batch.
+""")
+
+# ✅ FN Assumption & Learning Explanation
+st.markdown("## 📝 How FN Detection & Learning Works")
+st.info("""
+🔍 **False Negatives (FNs) Assumption**
+- If an egg is **just above the threshold (+1%)**, we **assume** it is a False Negative.
+- These eggs are manually **reinserted by the farmer** to help the machine learn.
+  
+🤖 **How the Machine Learns**
+- The machine **analyzes these FNs** and **adjusts thresholds slightly** to accept them in the future.
+- **Over multiple days, thresholds adapt** based on real farm conditions.
+- **Goal:** Minimize False Negatives while keeping sorting accuracy high.
+""")
+
+# ✅ File Upload Section
+uploaded_files = st.file_uploader("Upload 16 JSONL Files", type="jsonl", accept_multiple_files=True)
+
+if uploaded_files and len(uploaded_files) == 16:
+    file_paths = []
+    for i, uploaded_file in enumerate(uploaded_files):
+        file_path = f"day_{i+1}.jsonl"
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        file_paths.append(file_path)
+
+    current_thresholds = thresholds.copy()
+    fn_counts = []
+
+    for day in range(1, 17):
+        st.subheader(f"📅 Processing Day {day}...")
+
+        fns_day = extract_fns(file_paths[day-1], current_thresholds, percentage=1.0)
+        fn_counts.append(len(fns_day))
+
+        # ✅ Store Preset Thresholds Before RL Adjustment
+        old_thresholds = current_thresholds.copy()
+
+        if day == 1:
+            # ✅ Day 1: Increase Thresholds by 1% (Initial Step)
+            for key in current_thresholds.keys():
+                current_thresholds[key] = round(current_thresholds[key] * 1.01, 2)  
+        else:
+            best_thresholds = None
+            best_fn_count = float('inf')
+
+            for _ in range(10):
+                fn_file = f"fn_training_day{day}.jsonl"
+                with jsonlines.open(fn_file, "w") as writer:
+                    for egg_list in fns_day:
+                        writer.write(egg_list)
+
+                env = FNThresholdEnv(fn_file, current_thresholds, max_thresholds)  
+                model = PPO("MlpPolicy", env, verbose=1)
+                model.learn(total_timesteps=5000)
+
+                obs, _ = env.reset()
+                for _ in range(10):
+                    action, _ = model.predict(obs)
+                    obs, reward, terminated, truncated, info = env.step(action)
+                    if terminated or truncated:
+                        obs, _ = env.reset()
+
+                candidate_thresholds = {key: float(obs[i]) for i, key in enumerate(current_thresholds.keys())}
+                candidate_fn_count = len(extract_fns(file_paths[day-1], candidate_thresholds, percentage=1.0))
+
+                if candidate_fn_count < best_fn_count:
+                    best_fn_count = candidate_fn_count
+                    best_thresholds = candidate_thresholds
+
+            # ✅ Limit Max Threshold Change per Day (+1.0 max)
+            for key in best_thresholds.keys():
+                best_thresholds[key] = round(min(best_thresholds[key], current_thresholds[key] + 1.0), 2)
+
+            current_thresholds = best_thresholds.copy()
+            st.write(f"New RL-Optimized Thresholds for Day {day}: {best_thresholds}")
+
+        # ✅ Store Thresholds for Graphs
+        for key in current_thresholds.keys():
+            threshold_history[key].append(current_thresholds[key])
+
+    # ✅ 📈 Graph: Threshold Adjustments Over Time
+    st.subheader("📊 Threshold Adjustments Over Time")
+    for label, values in threshold_history.items():
+        plt.plot(range(1, len(values) + 1), values, marker='o', label=label)
+
+    plt.xlabel("Day")
+    plt.ylabel("Threshold Value")
+    plt.title("Daily Threshold Adjustments")
+    plt.legend()
+    st.pyplot(plt)
+
+    # ✅ 📊 Final FN Reduction Over Time
+    st.subheader("📉 Final FN Reduction Over 16 Days")
+    plt.figure(figsize=(10, 5))
+    plt.plot(range(1, len(fn_counts) + 1), fn_counts, marker='o', linestyle='-', color="red")
+    plt.xlabel("Day")
+    plt.ylabel("FN Count")
+    plt.title("False Negatives Reduction Over 16 Days")
+    st.pyplot(plt)
+
+    # ✅ 📊 Final FN & Threshold Comparison (Day 1 vs Day 16)
+    st.subheader("📊 Day 1 vs Day 16 Comparison")
+
+    # ✅ FN Count Comparison
+    col1, col2 = st.columns(2)
+    col1.metric(label="FN Count on Day 1", value=fn_counts[0])
+    col2.metric(label="FN Count on Day 16", value=fn_counts[-1])
+
+    # ✅ Threshold Comparison Table
+    final_thresholds = {key: current_thresholds[key] for key in thresholds.keys()}
+    df_comparison = {
+        "Initial Thresholds": thresholds,
+        "Final Thresholds": final_thresholds
+    }
+    st.table(df_comparison)
+
+    st.success("✅ Threshold optimization completed! Check results above.")
